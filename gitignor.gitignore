@@ -1,0 +1,21 @@
+# Данные
+data/
+__pycache__/
+*.pyc
+
+# Секреты
+.streamlit/secrets.toml
+secrets.toml
+
+# Виртуальное окружение
+venv/
+env/
+venv/
+
+# Логи
+requests_log.csv
+*.log
+
+# Системные
+.DS_Store
+Thumbs.db
