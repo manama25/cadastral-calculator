@@ -17,27 +17,34 @@ LOG_PATH = "requests_log.csv"
 # --- Загрузка данных с Яндекс.Диска ---
 @st.cache_data(ttl=3600)  # Кэш на 1 час
 def load_data():
-    try:
-        # Получаем прямую ссылку на скачивание
+try:
         response = requests.get(DATA_URL)
         response.raise_for_status()
         download_link = response.json()["href"]
 
-        # Скачиваем CSV
         csv_response = requests.get(download_link)
         csv_response.raise_for_status()
 
-        # Читаем в DataFrame
         df = pd.read_csv(
             StringIO(csv_response.text),
             sep=";",
             on_bad_lines="skip",
             dtype={"Код КЛАДР": str, "Кадастровый квартал": str}
         )
-        st.info(f"✅ Данные загружены: {len(df)} строк")
+
+        # 🔽 ПОКАЗЫВАЕМ ВСЕ СТОЛБЦЫ — УБЕРИТЕ ПОСЛЕ ИСПРАВЛЕНИЯ
+        st.write("🔍 Все столбцы в файле:")
+        st.write(df.columns.tolist())
+
+        # 🔽 Очищаем имена столбцов (удаляем пробелы и приводим к единому виду)
+        df.columns = df.columns.str.strip()  # Убираем пробелы в начале и конце
+        df.columns = df.columns.str.replace("\n", "", regex=False)  # Убираем переносы
+        df.columns = df.columns.str.replace("\r", "", regex=False)
+
         return df
+
     except Exception as e:
-        st.error(f"❌ Не удалось загрузить данные с Яндекс.Диска: {e}")
+        st.error(f"❌ Ошибка загрузки данных: {e}")
         st.stop()
 
 # --- Загрузка пользователей ---
