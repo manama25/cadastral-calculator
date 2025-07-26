@@ -1,5 +1,6 @@
 # app.py — Калькулятор кадастровой стоимости
 # Загружает данные с Яндекс.Диска: https://disk.yandex.ru/d/DB_EoNBlaIoLMg
+# Защита от повторных кликов, очистка столбцов, безопасная авторизация
 
 import streamlit as st
 import pandas as pd
@@ -11,7 +12,7 @@ from io import StringIO
 import os
 
 # --- Настройки ---
-YANDEX_PUBLIC_KEY = "DB_EoNBlaIoLMg"  # ← только ID из вашей ссылки
+YANDEX_PUBLIC_KEY = "DB_EoNBlaIoLMg"  # ← ваш ID из ссылки
 USERS_PATH = "users.csv"
 LOG_PATH = "requests_log.csv"
 
@@ -19,17 +20,14 @@ LOG_PATH = "requests_log.csv"
 @st.cache_data(ttl=3600)  # Кэш на 1 час
 def load_data():
     try:
-        # Получаем прямую ссылку на скачивание
         download_url = f"https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=https://disk.yandex.ru/d/{YANDEX_PUBLIC_KEY}"
         response = requests.get(download_url)
         response.raise_for_status()
         direct_link = response.json()["href"]
 
-        # Скачиваем CSV
         csv_response = requests.get(direct_link)
         csv_response.raise_for_status()
 
-        # Читаем в DataFrame
         df = pd.read_csv(
             StringIO(csv_response.text),
             sep=";",
@@ -37,18 +35,15 @@ def load_data():
             dtype={"Код КЛАДР": str, "Кадастровый квартал": str}
         )
 
-        # 🔽 Очищаем имена столбцов (удаляем пробелы, переносы, приводим к единому виду)
-        df.columns = df.columns.str.strip()                    # Убираем пробелы в начале/конце
-        df.columns = df.columns.str.replace("\n", "", regex=False)  # Убираем переносы строк
-        df.columns = df.columns.str.replace("\r", "", regex=False)  # Убираем возврат каретки
+        # 🔽 Очищаем имена столбцов
+        df.columns = df.columns.str.strip().str.replace("\n", "", regex=False).str.replace("\r", "", regex=False)
 
-        # 🔽 Принудительное переименование — на случай опечаток
+        # 🔽 Принудительное переименование (на случай опечаток)
         column_mapping = {
             'Категория земель ': 'Категория земель',
             'категория земель': 'Категория земель',
             'Категория_земель': 'Категория земель',
             'Категория земли': 'Категория земель',
-            '  Категория земель  ': 'Категория земель',
             'Наличие центрального водоснабжения ': 'Наличие центрального водоснабжения',
             'Наличие центрального газоснабжения ': 'Наличие центрального газоснабжения',
             'Наличие центральной канализации ': 'Наличие центральной канализации',
@@ -63,7 +58,7 @@ def load_data():
         return df
 
     except Exception as e:
-        st.error(f"❌ Не удалось загрузить данные с Яндекс.Диска: {e}")
+        st.error(f"❌ Не удалось загрузить данные: {e}")
         st.stop()
 
 # --- Загрузка пользователей ---
@@ -94,23 +89,25 @@ def login():
     password = st.text_input("Пароль", type="password")
 
     col1, col2 = st.columns([1, 2])
-    if col1.button("Войти"):
-        users = load_users()
-        user = users[users["username"] == username]
-        if len(user) == 1:
-            try:
-                hashed = user["hashed_password"].iloc[0].encode('utf-8')
-                if bcrypt.checkpw(password.encode('utf-8'), hashed):
-                    st.session_state["logged_in"] = True
-                    st.session_state["username"] = username
-                    st.session_state["is_admin"] = user["is_admin"].iloc[0]
-                    st.rerun()
-                else:
-                    st.error("Неверный пароль")
-            except Exception:
-                st.error("Ошибка проверки пароля")
-        else:
-            st.error("Пользователь не найден")
+    
+    if col1.button("Войти", key="login_btn", help="Нажмите один раз"):
+        with st.spinner("Вход..."):
+            users = load_users()
+            user = users[users["username"] == username]
+            if len(user) == 1:
+                try:
+                    hashed = user["hashed_password"].iloc[0].encode('utf-8')
+                    if bcrypt.checkpw(password.encode('utf-8'), hashed):
+                        st.session_state["logged_in"] = True
+                        st.session_state["username"] = username
+                        st.session_state["is_admin"] = user["is_admin"].iloc[0]
+                        st.rerun()
+                    else:
+                        st.error("Неверный пароль")
+                except Exception:
+                    st.error("Ошибка проверки пароля")
+            else:
+                st.error("Пользователь не найден")
 
     with col2:
         st.markdown("### 🔔 Запрос доступа")
@@ -118,7 +115,7 @@ def login():
             new_user = st.text_input("Желаемый логин")
             email = st.text_input("Email")
             phone = st.text_input("Телефон")
-            if st.button("Отправить запрос"):
+            if st.button("Отправить запрос", key="req_btn"):
                 if new_user and email:
                     log_pending_request(new_user, email, phone)
                     st.success("Запрос отправлен администратору.")
@@ -148,7 +145,8 @@ def main_app():
     with col1:
         category = st.selectbox(
             "Категория земель",
-            ["Все"] + sorted(df["Категория земель"].dropna().unique().tolist())
+            ["Все"] + sorted(df["Категория земель"].dropna().unique().tolist()),
+            key="category"
         )
         water = st.checkbox("Центральное водоснабжение", value=None, key="water")
         gas = st.checkbox("Центральное газоснабжение", value=None, key="gas")
@@ -159,15 +157,15 @@ def main_app():
         electricity = st.checkbox("Центральное электроснабжение", value=None, key="electricity")
 
     # --- Выбор территории ---
-    territory_mode = st.radio("Выбор территории", ["По кадастровому кварталу", "По адресу"])
+    territory_mode = st.radio("Выбор территории", ["По кадастровому кварталу", "По адресу"], key="territory_mode")
 
     filter_kq = filter_addr = None
 
     if territory_mode == "По кадастровому кварталу":
-        filter_kq = st.text_input("Кадастровый квартал (например, 78:12:0305002)")
+        filter_kq = st.text_input("Кадастровый квартал (например, 78:12:0305002)", key="kq_input")
     else:
         addresses = sorted(df["Адрес по КЛАДР"].dropna().astype(str).tolist())
-        search = st.text_input("Введите часть адреса для поиска...")
+        search = st.text_input("Введите часть адреса для поиска...", key="addr_search")
 
         if search:
             matches = [addr for addr in addresses if search.lower() in addr.lower()]
@@ -176,7 +174,7 @@ def main_app():
             elif len(matches) > 50:
                 st.info("Найдено более 50 совпадений. Уточните запрос.")
             else:
-                filter_addr = st.selectbox("Выберите адрес:", [""] + matches)
+                filter_addr = st.selectbox("Выберите адрес:", [""] + matches, key="addr_select")
 
     # --- Фильтрация ---
     filtered = df.copy()
@@ -212,20 +210,22 @@ def main_app():
         st.info(f"📉 **Минимум:** {min_val:,.2f} | **Максимум:** {max_val:,.2f}")
 
         # --- Экспорт в Excel ---
-        if st.button("📥 Скачать результаты в Excel"):
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                filtered.to_excel(writer, index=False, sheet_name="Результаты")
-            buffer.seek(0)
-            filename = f"кадастр_{st.session_state['username']}_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
-            st.download_button(
-                label="✅ Нажмите, чтобы скачать",
-                data=buffer,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        if st.button("📥 Скачать результаты в Excel", key="export_btn"):
+            with st.spinner("Формируем Excel..."):
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    filtered.to_excel(writer, index=False, sheet_name="Результаты")
+                buffer.seek(0)
+                filename = f"кадастр_{st.session_state['username']}_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+                st.download_button(
+                    label="✅ Нажмите, чтобы скачать",
+                    data=buffer,
+                    file_name=filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_btn"
+                )
 
-        if st.checkbox("Показать найденные участки"):
+        if st.checkbox("Показать найденные участки", key="show_data"):
             st.dataframe(
                 filtered[[
                     "Номер", "Кадастровый квартал", "Адрес по КЛАДР",
@@ -260,7 +260,7 @@ def main_app():
 
         # Лог запросов
         st.markdown("### 📋 История запросов")
-        if st.button("Обновить логи"):
+        if st.button("Обновить логи", key="refresh_logs"):
             if os.path.exists(LOG_PATH):
                 log_df = pd.read_csv(LOG_PATH)
                 st.dataframe(log_df, use_container_width=True)
@@ -273,7 +273,7 @@ if "logged_in" not in st.session_state:
     login()
 else:
     st.sidebar.success(f"Привет, {st.session_state['username']}!")
-    if st.sidebar.button("Выйти"):
+    if st.sidebar.button("Выйти", key="logout_btn"):
         st.session_state.clear()
         st.rerun()
     main_app()
