@@ -1,26 +1,46 @@
+# app.py — Калькулятор кадастровой стоимости
+# Поддерживает загрузку данных с Яндекс.Диска
+
 import streamlit as st
 import pandas as pd
 import bcrypt
 import datetime
 import io
-import os
+import requests
+from io import StringIO
 
 # --- Настройки ---
-DATA_PATH = "data/land_data.csv"
+DATA_URL = "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=https://disk.yandex.ru/d/DB_EoNBlaIoLMg"
 USERS_PATH = "users.csv"
 LOG_PATH = "requests_log.csv"
-PENDING_PATH = "pending_requests.csv"  # Заявки на доступ
 
-# --- Загрузка данных ---
-@st.cache_data
+# --- Загрузка данных с Яндекс.Диска ---
+@st.cache_data(ttl=3600)  # Кэш на 1 час
 def load_data():
     try:
-        df = pd.read_csv(DATA_PATH, sep=";", on_bad_lines="skip", dtype={"Код КЛАДР": str, "Кадастровый квартал": str})
+        # Получаем прямую ссылку на скачивание
+        response = requests.get(DATA_URL)
+        response.raise_for_status()
+        download_link = response.json()["href"]
+
+        # Скачиваем CSV
+        csv_response = requests.get(download_link)
+        csv_response.raise_for_status()
+
+        # Читаем в DataFrame
+        df = pd.read_csv(
+            StringIO(csv_response.text),
+            sep=";",
+            on_bad_lines="skip",
+            dtype={"Код КЛАДР": str, "Кадастровый квартал": str}
+        )
+        st.info(f"✅ Данные загружены: {len(df)} строк")
         return df
     except Exception as e:
-        st.error(f"Ошибка загрузки данных: {e}")
+        st.error(f"❌ Не удалось загрузить данные с Яндекс.Диска: {e}")
         st.stop()
 
+# --- Загрузка пользователей ---
 @st.cache_data
 def load_users():
     if not os.path.exists(USERS_PATH):
@@ -39,18 +59,6 @@ def log_request(username, filters, count):
     log_df = pd.DataFrame([log_entry])
     header = not os.path.exists(LOG_PATH)
     log_df.to_csv(LOG_PATH, mode="a", header=header, index=False)
-
-def log_pending_request(username, email, phone):
-    entry = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "username": username,
-        "email": email,
-        "phone": phone,
-        "status": "ожидает"
-    }
-    df = pd.DataFrame([entry])
-    header = not os.path.exists(PENDING_PATH)
-    df.to_csv(PENDING_PATH, mode="a", header=header, index=False)
 
 # --- Авторизация ---
 def login():
@@ -91,6 +99,18 @@ def login():
                 else:
                     st.error("Заполните логин и email.")
 
+def log_pending_request(username, email, phone):
+    entry = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "username": username,
+        "email": email,
+        "phone": phone,
+        "status": "ожидает"
+    }
+    df = pd.DataFrame([entry])
+    header = not os.path.exists("pending_requests.csv")
+    df.to_csv("pending_requests.csv", mode="a", header=header, index=False)
+
 # --- Основное приложение ---
 def main_app():
     df = load_data()
@@ -130,7 +150,7 @@ def main_app():
             elif len(matches) > 50:
                 st.info("Найдено более 50 совпадений. Уточните запрос.")
             else:
-                filter_addr = st.radio("Выберите адрес:", matches)
+                filter_addr = st.selectbox("Выберите адрес:", [""] + matches)
 
     # --- Фильтрация ---
     filtered = df.copy()
@@ -165,7 +185,7 @@ def main_app():
         st.success(f"📊 **Среднее значение:** {mean_val:,.2f}")
         st.info(f"📉 **Минимум:** {min_val:,.2f} | **Максимум:** {max_val:,.2f}")
 
-        # --- Кнопка экспорта в Excel ---
+        # --- Экспорт в Excel ---
         if st.button("📥 Скачать результаты в Excel"):
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
@@ -173,7 +193,7 @@ def main_app():
             buffer.seek(0)
             filename = f"кадастр_{st.session_state['username']}_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
             st.download_button(
-                label="✅ Нажмите, чтобы скачать файл",
+                label="✅ Нажмите, чтобы скачать",
                 data=buffer,
                 file_name=filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -188,7 +208,6 @@ def main_app():
                 use_container_width=True
             )
 
-        # Логируем запрос
         log_request(st.session_state["username"], {
             "category": category,
             "water": water,
@@ -207,8 +226,8 @@ def main_app():
 
         # Заявки на доступ
         st.markdown("### 📥 Заявки на доступ")
-        if os.path.exists(PENDING_PATH):
-            pending_df = pd.read_csv(PENDING_PATH)
+        if os.path.exists("pending_requests.csv"):
+            pending_df = pd.read_csv("pending_requests.csv")
             st.dataframe(pending_df, use_container_width=True)
         else:
             st.info("Пока нет заявок на доступ.")
@@ -223,6 +242,8 @@ def main_app():
                 st.info("Логи пока пусты.")
 
 # --- Главный цикл ---
+import os
+
 if "logged_in" not in st.session_state:
     st.sidebar.title("🔐 Авторизация")
     login()
